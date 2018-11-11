@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <context:property-placeholder location="classpath:app.properties"/>
+
+    <bean id="hikariConfig" class="com.zaxxer.hikari.HikariConfig">
+        <property name="poolName" value="springHikariCP"/>
+        <property name="connectionTestQuery" value="SELECT 1"/>
+        <property name="jdbcUrl" value="${dataSource.url}"/>
+
+        <property name="dataSourceProperties">
+            <props>
+                <prop key="user">${dataSource.username}</prop>
+                <prop key="password">${dataSource.password}</prop>
+            </props>
+        </property>
+    </bean>
+
+    <bean id="dataSource" class="com.zaxxer.hikari.HikariDataSource" destroy-method="close">
+        <constructor-arg ref="hikariConfig"/>
+    </bean>
+
+    <bean id="zipAggregationStrategy" class="org.apache.camel.processor.aggregate.zipfile.ZipAggregationStrategy">
+        <constructor-arg value="true"/>
+        <constructor-arg value="true"/>
+    </bean>
+
+    <!--suppress UnparsedCustomBeanInspection -->
+    <camelContext xmlns="http://camel.apache.org/schema/spring">
+
+        <propertyPlaceholder id="props" location="classpath:app.properties"/>
+
+        <!--
+        Забираем из папки {{directory.source}} файлы с интервалом 1 секунда, используя фиксированную задержку,
+        сохраняем в заголовок sourceFileName исходное имя файла без расширения,
+        преобразуем GenericFile в строку с содержимым файла, сохраняем содержимое файла в заголовке sourceBody,
+        применяем xslt-преобразование к исходному файлу, извлекаем номер заказа и сохраняем его в заголовке orderNumber,
+        отправляем результат в три маршрута:
+        один для сохранения в {{directory.dest1}},
+        второй для сохранение в БД;
+        третий для архивирования.
+        В случае исключительной ситуации перемещаем исходный файл в каталог {{directory.bad}}.
+        -->
+        <route id="root">
+            <from uri="file:{{directory.source}}?consumer.useFixedDelay=true&amp;consumer.delay=1000"/>
+            <setHeader headerName="sourceFileName">
+                <simple>
+                    ${file:onlyname.noext}
+                </simple>
+            </setHeader>
+            <convertBodyTo type="String"/>
+            <setHeader headerName="sourceBody">
+                <simple>
+                    ${body}
+                </simple>
+            </setHeader>
+            <to uri="xslt:idoc2order.xsl"/>
+            <setHeader headerName="orderNumber">
+                <xpath resultType="java.lang.String">
+                    //Interchange/Group/Message/Document-Order/Order-Header/OrderNumber
+                </xpath>
+            </setHeader>
+            <multicast>
+                <to uri="file:{{directory.dest1}}?fileName=${in.header.orderNumber}.xml"/>
+                <to uri="direct:db"/>
+                <to uri="direct:zip"/>
+            </multicast>
+            <to uri="mock:result"/>
+            <onException>
+                <exception>java.lang.Exception</exception>
+                <handled>
+                    <constant>true</constant>
+                </handled>
+                <to uri="file:{{directory.bad}}"/>
+            </onException>
+        </route>
+
+        <!--
+        Сохранение в БД реализовано с помощью двух маршрутов.
+        sourceDb сохраняет в заголовок содержимое исходного сообщения, так как SQL его заменит,
+        затем делает вставку в таблицу, возвращает исходное сообщение на место.
+        Во время вставки id вставленной строки устанавливается в заголовок,
+        который потом используется для вставки во вторую таблицу.
+        -->
+        <route id="db">
+            <from uri="direct:db"/>
+            <setHeader headerName="CamelSqlRetrieveGeneratedKeys">
+                <simple>true</simple>
+            </setHeader>
+            <to uri="direct:sourceDb"/>
+            <to uri="sql://insert into dest_order(source_order_id, order_number, xml, date) values(:#${in.header.CamelSqlGeneratedKeyRows[0]['id']}, :#${in.header.orderNumber}, :#${in.body}, :#${date:now})"/>
+        </route>
+
+        <route id="sourceDb">
+            <from uri="direct:sourceDb"/>
+            <setProperty propertyName="old">
+                <simple>${body}</simple>
+            </setProperty>
+            <to uri="sql://insert into source_order(order_number, xml, date) values(:#${in.header.orderNumber}, :#${in.header.sourceBody}, :#${date:now})"/>
+            <setBody>
+                <simple>${exchangeProperty[old]}</simple>
+            </setBody>
+        </route>
+
+        <!--
+        Архивирование реализуется отправкой сообщения в два маршрута, каждый из которых подготавливает свой файл:
+        * sourceZip устанавливает в тело сообщения исходный xml из заголовка;
+        * destZip подменяет имя файла результата на orderNumber из заголовка.
+        Результат затем обрабатывается бином zipAggregationStrategy и сохраняется в каталог {{directory.dest2}}.
+        -->
+        <route id="zip">
+            <from uri="direct:zip"/>
+            <multicast strategyRef="zipAggregationStrategy">
+                <to uri="direct:sourceZip"/>
+                <to uri="direct:destZip"/>
+            </multicast>
+            <to uri="file:{{directory.dest2}}?fileName=${in.header.sourceFileName}.zip"/>
+        </route>
+
+        <route id="sourceZip">
+            <from uri="direct:sourceZip"/>
+            <setBody>
+                <simple>${in.header.sourceBody}</simple>
+            </setBody>
+        </route>
+
+        <route id="destZip">
+            <from uri="direct:destZip"/>
+            <setHeader headerName="CamelFileName">
+                <simple>
+                    ${in.header.orderNumber}.xml
+                </simple>
+            </setHeader>
+        </route>
+
+    </camelContext>
+</beans>

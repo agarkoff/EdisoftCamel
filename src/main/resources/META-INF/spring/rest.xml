@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:jdbc="http://www.springframework.org/schema/jdbc"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+       http://camel.apache.org/schema/spring http://camel.apache.org/schema/spring/camel-spring.xsd http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <context:property-placeholder location="classpath:app.properties"/>
+
+    <bean id="bean" class="ru.misterparser.ResultSetToListTransformer"/>
+
+    <!--suppress UnparsedCustomBeanInspection -->
+    <camelContext xmlns="http://camel.apache.org/schema/spring">
+
+        <propertyPlaceholder id="props" location="app.properties"/>
+
+        <dataFormats>
+            <json id="json" library="Jackson"/>
+        </dataFormats>
+
+        <restConfiguration host="{{service.host}}" port="{{service.port}}" component="restlet"/>
+
+        <rest path="/source" produces="application/json">
+            <get uri="/all">
+                <to uri="direct:getAllOrderNumbers"/>
+            </get>
+        </rest>
+
+        <rest path="/source/" produces="application/xml">
+            <get uri="/{orderNumber}">
+                <to uri="direct:getSourceByOrderNumber"/>
+            </get>
+        </rest>
+
+        <route id="getAllOrderNumbers">
+            <from uri="direct:getAllOrderNumbers"/>
+            <to uri="sql://select distinct order_number from source_order"/>
+            <bean ref="bean" method="transform(Exchange, 'order_number')"/>
+            <marshal ref="json"/>
+        </route>
+
+        <route id="getSourceByOrderNumber">
+            <from uri="direct:getSourceByOrderNumber"/>
+            <to uri="sql://select xml from source_order where order_number = :#orderNumber limit 1"/>
+            <setBody>
+                <simple>${body[0]['xml']}</simple>
+            </setBody>
+        </route>
+
+    </camelContext>
+
+</beans>
