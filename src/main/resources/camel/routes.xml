@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<routes xmlns="http://camel.apache.org/schema/spring">
+    <!--
+    Забираем из папки {{directory.source}} файлы с интервалом 1 секунда, используя фиксированную задержку,
+    сохраняем в заголовок sourceFileName исходное имя файла без расширения,
+    преобразуем GenericFile в строку с содержимым файла, сохраняем содержимое файла в заголовке sourceBody,
+    применяем xslt-преобразование к исходному файлу, извлекаем номер заказа и сохраняем его в заголовке orderNumber,
+    отправляем результат в три маршрута:
+    один для сохранения в {{directory.dest1}},
+    второй для сохранение в БД с помощью сервиса SaveService;
+    третий для архивирования.
+    В случае исключительной ситуации перемещаем исходный файл в каталог {{directory.bad}}.
+    -->
+    <route id="root">
+        <from uri="file:{{directory.source}}?consumer.useFixedDelay=true&amp;consumer.delay=1000"/>
+        <setHeader headerName="sourceFileName">
+            <simple>
+                ${file:onlyname.noext}
+            </simple>
+        </setHeader>
+        <convertBodyTo type="String"/>
+        <setHeader headerName="sourceBody">
+            <simple>
+                ${body}
+            </simple>
+        </setHeader>
+        <to uri="xslt:idoc2order.xsl"/>
+        <setHeader headerName="orderNumber">
+            <xpath resultType="java.lang.String">
+                //Interchange/Group/Message/Document-Order/Order-Header/OrderNumber
+            </xpath>
+        </setHeader>
+        <multicast>
+            <to uri="file:{{directory.dest1}}?fileName=${in.header.orderNumber}.xml"/>
+            <bean ref="saveService" method="save"/>
+            <to uri="direct:zip"/>
+        </multicast>
+        <to uri="mock:result"/>
+        <onException>
+            <exception>java.lang.Exception</exception>
+            <handled>
+                <constant>true</constant>
+            </handled>
+            <to uri="file:{{directory.bad}}"/>
+        </onException>
+    </route>
+
+    <!--
+    Архивирование реализуется отправкой сообщения в два маршрута, каждый из которых подготавливает свой файл:
+    * sourceZip устанавливает в тело сообщения исходный xml из заголовка;
+    * destZip подменяет имя файла результата на orderNumber из заголовка.
+    Результат затем обрабатывается бином zipAggregationStrategy и сохраняется в каталог {{directory.dest2}}.
+    -->
+    <route id="zip">
+        <from uri="direct:zip"/>
+        <multicast strategyRef="zipAggregationStrategy">
+            <to uri="direct:sourceZip"/>
+            <to uri="direct:destZip"/>
+        </multicast>
+        <to uri="file:{{directory.dest2}}?fileName=${in.header.sourceFileName}.zip"/>
+    </route>
+
+    <route id="sourceZip">
+        <from uri="direct:sourceZip"/>
+        <setBody>
+            <simple>${in.header.sourceBody}</simple>
+        </setBody>
+    </route>
+
+    <route id="destZip">
+        <from uri="direct:destZip"/>
+        <setHeader headerName="CamelFileName">
+            <simple>
+                ${in.header.orderNumber}.xml
+            </simple>
+        </setHeader>
+    </route>
+
+</routes>
