@@ -32,6 +32,7 @@ public class SaveService {
                 .date(new Date())
                 .build();
         sourceOrderRepository.save(sourceOrder);
+        log.debug("Saved: " + sourceOrder);
 
         DestOrder destOrder = DestOrder.builder()
                 .orderNumber(sourceOrder.getOrderNumber())
@@ -40,5 +41,6 @@ public class SaveService {
                 .date(new Date())
                 .build();
         destOrderRepository.save(destOrder);
+        log.debug("Saved: " + destOrder);
     }
 }
