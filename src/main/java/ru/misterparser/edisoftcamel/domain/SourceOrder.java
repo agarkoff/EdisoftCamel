@@ -33,7 +33,7 @@ public class SourceOrder implements Persistable<Long> {
     @Column(name = "order_number")
     private String orderNumber;
 
-    @Column(name = "xml")
+    @Column(name = "xml", length = Integer.MAX_VALUE)
     private String xml;
 
     @Column(name = "date")
